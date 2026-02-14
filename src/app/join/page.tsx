@@ -3,8 +3,8 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { getSocket } from "@/lib/socket";
-import { useGameStore } from "@/store/game-store";
+import { getSocket } from "../../lib/socket";
+import { useGameStore } from "../../store/game-store";
 
 export default function JoinPage() {
   const router = useRouter();

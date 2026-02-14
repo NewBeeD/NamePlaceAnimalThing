@@ -3,9 +3,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { getSocket } from "@/lib/socket";
-import { useGameStore } from "@/store/game-store";
-import type { GameRoomState } from "@/types/game";
+import { getSocket } from "../../../lib/socket";
+import { useGameStore } from "../../../store/game-store";
+import type { GameRoomState } from "../../../types/game";
 
 const AVATARS = ["🕺", "💃", "🐼", "🦊", "🐸", "🦄", "🐯", "🐨", "🐵", "🐧"];
 

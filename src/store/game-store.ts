@@ -1,7 +1,7 @@
 "use client";
 
 import { create } from "zustand";
-import type { GameRoomState } from "@/types/game";
+import type { GameRoomState } from "../types/game";
 
 type Session = {
   userId: string;

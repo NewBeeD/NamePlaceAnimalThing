@@ -3,9 +3,9 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { generateGameCode, clampRounds } from "@/lib/game-utils";
-import { getSocket } from "@/lib/socket";
-import { useGameStore } from "@/store/game-store";
+import { generateGameCode, clampRounds } from "../../lib/game-utils";
+import { getSocket } from "../../lib/socket";
+import { useGameStore } from "../../store/game-store";
 
 const CATEGORY_OPTIONS = [
   "Name",
