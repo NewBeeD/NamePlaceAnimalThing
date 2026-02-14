@@ -28,9 +28,11 @@ export type GameRoomState = {
   settings: GameSettings;
   currentRound: number;
   currentLetter: string;
+  roundEndsAt?: number;
   phase: GamePhase;
   currentAnswers: Record<string, Record<string, string>>;
   totalScores: Record<string, number>;
   roundBreakdown: RoundBreakdown;
   scoringAssignments?: Record<string, string[]>;
+  manualScoreLocks?: Record<string, Record<string, boolean>>;
 };

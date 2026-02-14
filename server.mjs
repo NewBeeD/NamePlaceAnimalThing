@@ -9,6 +9,7 @@ const port = Number(process.env.PORT || 3000);
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1";
 const OPENAI_MAX_CONCURRENT_REQUESTS = Math.max(1, Number(process.env.OPENAI_MAX_CONCURRENT_REQUESTS || 2));
+const ROUND_DURATION_MS = 60_000;
 
 let activeOpenAIRequests = 0;
 const openAIQueue = [];
@@ -206,6 +207,35 @@ const normalizeManualScore = (value) => {
     return 10;
   }
   return numeric >= 5 ? 5 : 0;
+};
+
+const buildManualDuplicateLocks = (room) => {
+  const countsByCategory = {};
+  for (const category of room.settings.categories) {
+    countsByCategory[category] = {};
+  }
+
+  for (const user of room.users) {
+    for (const category of room.settings.categories) {
+      const answer = normalizeEntry(room.currentAnswers[user.id]?.[category] || "");
+      if (!answer) {
+        continue;
+      }
+
+      countsByCategory[category][answer] = (countsByCategory[category][answer] || 0) + 1;
+    }
+  }
+
+  const locks = {};
+  for (const user of room.users) {
+    locks[user.id] = {};
+    for (const category of room.settings.categories) {
+      const answer = normalizeEntry(room.currentAnswers[user.id]?.[category] || "");
+      locks[user.id][category] = Boolean(answer) && (countsByCategory[category][answer] || 0) > 1;
+    }
+  }
+
+  return locks;
 };
 
 const isLikelyValidWord = (value, requiredLetter) => {
@@ -631,8 +661,115 @@ app.prepare().then(() => {
 
   const rooms = new Map();
   const presence = new Map();
+  const roundTimeouts = new Map();
+
+  const clearRoundTimeout = (roomCode) => {
+    const timeout = roundTimeouts.get(roomCode);
+    if (timeout) {
+      clearTimeout(timeout);
+      roundTimeouts.delete(roomCode);
+    }
+  };
+
+  const scheduleRoundTimeout = (room) => {
+    clearRoundTimeout(room.code);
+    room.roundEndsAt = Date.now() + ROUND_DURATION_MS;
+
+    const timeout = setTimeout(() => {
+      const liveRoom = rooms.get(room.code);
+      if (!liveRoom || liveRoom.phase !== "play" || liveRoom.roundFinalized) {
+        return;
+      }
+
+      finalizeRoundToGrading(liveRoom, null, "timeout");
+    }, ROUND_DURATION_MS);
+
+    roundTimeouts.set(room.code, timeout);
+  };
+
+  const snapshotCurrentAnswers = (room) => {
+    for (const participant of room.users) {
+      const previous = room.currentAnswers[participant.id] || {};
+      const snapshot = {};
+      for (const category of room.settings.categories) {
+        snapshot[category] = String(previous[category] || "").trim();
+      }
+      room.currentAnswers[participant.id] = snapshot;
+    }
+  };
+
+  const beginGrading = (room) => {
+    setTimeout(() => {
+      if (room.phase !== "ai-grading") {
+        return;
+      }
+
+      Promise.resolve(evaluateRoundWithAI(room))
+        .then(({ aiAvailable, breakdown, roundTotals }) => {
+          if (room.phase !== "ai-grading") {
+            return;
+          }
+
+          if (!aiAvailable) {
+            room.phase = "scoring";
+            room.scoreSheets = {};
+            room.scoringAssignments = generateManualScoringAssignments(room.users);
+            room.manualScoreLocks = buildManualDuplicateLocks(room);
+            io.to(room.code).emit("manual-scoring-required", {
+              round: room.currentRound,
+            });
+            emitRoomState(room);
+            return;
+          }
+
+          room.roundBreakdown = breakdown;
+
+          for (const participant of room.users) {
+            room.totalScores[participant.id] = (room.totalScores[participant.id] || 0) + (roundTotals[participant.id] || 0);
+          }
+
+          room.phase = "round-breakdown";
+          io.to(room.code).emit("ai-grading-complete", {
+            round: room.currentRound,
+            roundBreakdown: room.roundBreakdown,
+          });
+          emitRoomState(room);
+        })
+        .catch((error) => {
+          console.error("AI grading failed.", error);
+          room.phase = "scoring";
+          room.scoreSheets = {};
+          room.scoringAssignments = generateManualScoringAssignments(room.users);
+          room.manualScoreLocks = buildManualDuplicateLocks(room);
+          emitRoomState(room);
+        });
+    }, 1800);
+  };
+
+  const finalizeRoundToGrading = (room, triggerUserId, triggerSource) => {
+    if (!room || room.phase !== "play" || room.roundFinalized) {
+      return false;
+    }
+
+    room.roundFinalized = true;
+    clearRoundTimeout(room.code);
+
+    if (triggerUserId && !room.submittedUserIds.includes(triggerUserId)) {
+      room.submittedUserIds.push(triggerUserId);
+    }
+
+    snapshotCurrentAnswers(room);
+
+    room.phase = "ai-grading";
+    room.roundEndsAt = 0;
+    room.roundFinalizedBy = triggerSource;
+    emitRoomState(room);
+    beginGrading(room);
+    return true;
+  };
 
   const closeRoomForAll = (roomCode, reason = "Host left. Room closed.") => {
+    clearRoundTimeout(roomCode);
     io.to(roomCode).emit("room-closed", { reason });
     io.in(roomCode).socketsLeave(roomCode);
 
@@ -653,10 +790,12 @@ app.prepare().then(() => {
       currentRound: room.currentRound,
       currentLetter: room.currentLetter,
       phase: room.phase,
+      roundEndsAt: room.roundEndsAt,
       currentAnswers: room.currentAnswers,
       totalScores: room.totalScores,
       roundBreakdown: room.roundBreakdown,
       scoringAssignments: room.scoringAssignments,
+      manualScoreLocks: room.manualScoreLocks,
     });
   };
 
@@ -701,6 +840,10 @@ app.prepare().then(() => {
           submittedUserIds: [],
           scoreSheets: {},
           scoringAssignments: {},
+          manualScoreLocks: {},
+          roundEndsAt: 0,
+          roundFinalized: false,
+          roundFinalizedBy: null,
         };
 
         rooms.set(code, room);
@@ -754,10 +897,17 @@ app.prepare().then(() => {
       room.submittedUserIds = [];
       room.scoreSheets = {};
       room.scoringAssignments = {};
+      room.manualScoreLocks = {};
+      room.roundFinalized = false;
+      room.roundFinalizedBy = null;
+      room.roundEndsAt = 0;
+
+      scheduleRoundTimeout(room);
 
       io.to(room.code).emit("round-start", {
         round: room.currentRound,
         letter: room.currentLetter,
+        roundEndsAt: room.roundEndsAt,
       });
       emitRoomState(room);
     });
@@ -817,65 +967,7 @@ app.prepare().then(() => {
       room.currentAnswers[userId] = finalAnswers;
       room.submittedUserIds.push(userId);
 
-      for (const participant of room.users) {
-        if (participant.id === userId) {
-          continue;
-        }
-
-        const previous = room.currentAnswers[participant.id] || {};
-        const snapshot = {};
-        for (const category of room.settings.categories) {
-          snapshot[category] = String(previous[category] || "").trim();
-        }
-        room.currentAnswers[participant.id] = snapshot;
-      }
-
-      room.phase = "ai-grading";
-      emitRoomState(room);
-
-      setTimeout(() => {
-        if (room.phase !== "ai-grading") {
-          return;
-        }
-
-        Promise.resolve(evaluateRoundWithAI(room))
-          .then(({ aiAvailable, breakdown, roundTotals }) => {
-            if (room.phase !== "ai-grading") {
-              return;
-            }
-
-            if (!aiAvailable) {
-              room.phase = "scoring";
-              room.scoreSheets = {};
-              room.scoringAssignments = generateManualScoringAssignments(room.users);
-              io.to(room.code).emit("manual-scoring-required", {
-                round: room.currentRound,
-              });
-              emitRoomState(room);
-              return;
-            }
-
-            room.roundBreakdown = breakdown;
-
-            for (const participant of room.users) {
-              room.totalScores[participant.id] = (room.totalScores[participant.id] || 0) + (roundTotals[participant.id] || 0);
-            }
-
-            room.phase = "round-breakdown";
-            io.to(room.code).emit("ai-grading-complete", {
-              round: room.currentRound,
-              roundBreakdown: room.roundBreakdown,
-            });
-            emitRoomState(room);
-          })
-          .catch((error) => {
-            console.error("AI grading failed.", error);
-            room.phase = "scoring";
-            room.scoreSheets = {};
-            room.scoringAssignments = generateManualScoringAssignments(room.users);
-            emitRoomState(room);
-          });
-      }, 1800);
+      finalizeRoundToGrading(room, userId, "submit");
     });
 
     socket.on("submit-scores", (payload, callback) => {
@@ -898,7 +990,10 @@ app.prepare().then(() => {
       for (const targetId of assignedTargets) {
         sanitizedScores[targetId] = {};
         for (const category of room.settings.categories) {
-          sanitizedScores[targetId][category] = normalizeManualScore(submittedScores?.[targetId]?.[category]);
+          const isLockedDuplicate = Boolean(room.manualScoreLocks?.[targetId]?.[category]);
+          sanitizedScores[targetId][category] = isLockedDuplicate
+            ? 5
+            : normalizeManualScore(submittedScores?.[targetId]?.[category]);
         }
       }
 
@@ -936,12 +1031,13 @@ app.prepare().then(() => {
             ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length)
             : 0;
 
-          const normalized = normalizeManualScore(average);
+          const isLockedDuplicate = Boolean(room.manualScoreLocks?.[target.id]?.[category]);
+          const normalized = isLockedDuplicate ? 5 : normalizeManualScore(average);
 
           manualBreakdown[target.id][category] = {
             answer: String(room.currentAnswers[target.id]?.[category] || "").trim(),
             points: normalized,
-            reason: "manual",
+            reason: isLockedDuplicate ? "duplicate" : "manual",
           };
           total += normalized;
         }
@@ -999,10 +1095,17 @@ app.prepare().then(() => {
         room.submittedUserIds = [];
         room.scoreSheets = {};
         room.scoringAssignments = {};
+        room.manualScoreLocks = {};
+        room.roundFinalized = false;
+        room.roundFinalizedBy = null;
+        room.roundEndsAt = 0;
+
+        scheduleRoundTimeout(room);
 
         io.to(room.code).emit("round-start", {
           round: room.currentRound,
           letter: room.currentLetter,
+          roundEndsAt: room.roundEndsAt,
         });
         emitRoomState(room);
         callback?.({ ok: true });
@@ -1046,6 +1149,7 @@ app.prepare().then(() => {
       delete room.scoreSheets[userId];
 
       if (room.users.length === 0) {
+        clearRoundTimeout(code);
         rooms.delete(code);
         callback?.({ ok: true });
         return;
@@ -1057,6 +1161,7 @@ app.prepare().then(() => {
 
       if (room.phase === "scoring") {
         room.scoringAssignments = generateManualScoringAssignments(room.users);
+        room.manualScoreLocks = buildManualDuplicateLocks(room);
         room.scoreSheets = {};
       }
 
@@ -1087,6 +1192,7 @@ app.prepare().then(() => {
       room.users = room.users.filter((user) => user.id !== track.userId);
 
       if (room.users.length === 0) {
+        clearRoundTimeout(track.code);
         rooms.delete(track.code);
         return;
       }
@@ -1097,6 +1203,7 @@ app.prepare().then(() => {
 
       if (room.phase === "scoring") {
         room.scoringAssignments = generateManualScoringAssignments(room.users);
+        room.manualScoreLocks = buildManualDuplicateLocks(room);
         room.scoreSheets = {};
       }
 

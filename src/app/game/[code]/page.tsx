@@ -37,6 +37,7 @@ export default function GamePage() {
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [scoreSheet, setScoreSheet] = useState<Record<string, Record<string, number>>>({});
   const [status, setStatus] = useState("");
+  const [nowTimestamp, setNowTimestamp] = useState(Date.now());
 
   const me = game?.users.find((user) => user.id === session?.userId);
   const isHost = Boolean(me?.isHost);
@@ -177,6 +178,19 @@ export default function GamePage() {
   }, [answers, game, session]);
 
   useEffect(() => {
+    if (!game || game.phase !== "play" || !game.roundEndsAt) {
+      return;
+    }
+
+    setNowTimestamp(Date.now());
+    const interval = setInterval(() => {
+      setNowTimestamp(Date.now());
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [game]);
+
+  useEffect(() => {
     if (!game || !session || game.phase !== "scoring") {
       return;
     }
@@ -186,7 +200,8 @@ export default function GamePage() {
     for (const targetId of assignedTargets) {
       initial[targetId] = {};
       for (const category of game.settings.categories) {
-        initial[targetId][category] = 0;
+        const isLockedDuplicate = Boolean(game.manualScoreLocks?.[targetId]?.[category]);
+        initial[targetId][category] = isLockedDuplicate ? 5 : 0;
       }
     }
 
@@ -255,6 +270,12 @@ export default function GamePage() {
     ? (game.scoringAssignments?.[session.userId] || [])
     : [];
   const scoringTargets = game?.users.filter((player) => scoringTargetIds.includes(player.id)) || [];
+  const timeLeftMs = game?.phase === "play" && game?.roundEndsAt
+    ? Math.max(0, game.roundEndsAt - nowTimestamp)
+    : 0;
+  const timeLeftSeconds = Math.ceil(timeLeftMs / 1000);
+  const minutesPart = String(Math.floor(timeLeftSeconds / 60)).padStart(2, "0");
+  const secondsPart = String(timeLeftSeconds % 60).padStart(2, "0");
 
   const copyCode = async () => {
     await navigator.clipboard.writeText(roomCode);
@@ -365,6 +386,9 @@ export default function GamePage() {
           <p className="text-base sm:text-lg">
             Letter: <span className="text-3xl font-bold">{game.currentLetter}</span>
           </p>
+          <p className="text-sm font-semibold text-cyan-100">
+            Time left: {minutesPart}:{secondsPart}
+          </p>
 
           <div className="grid gap-3 sm:grid-cols-2">
             {game.settings.categories.map((category) => (
@@ -421,13 +445,27 @@ export default function GamePage() {
                 <div className="mt-2 space-y-2">
                   {game.settings.categories.map((category) => (
                     <div key={category} className="flex items-center justify-between gap-3 rounded-xl border border-white/20 bg-white/5 p-2 text-sm">
+                      {(() => {
+                        const isLockedDuplicate = Boolean(game.manualScoreLocks?.[player.id]?.[category]);
+                        const currentValue = isLockedDuplicate ? 5 : (scoreSheet[player.id]?.[category] ?? 0);
+                        return (
+                          <>
                       <p className="min-w-0 flex-1">
                         <span className="font-medium">{category}:</span> {game.currentAnswers[player.id]?.[category] || "-"}
+                        {isLockedDuplicate ? (
+                          <span className="ml-2 rounded-full border border-amber-400/40 bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-200">
+                            Matched
+                          </span>
+                        ) : null}
                       </p>
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
                           onClick={() => {
+                            if (isLockedDuplicate) {
+                              return;
+                            }
+
                             const current = scoreSheet[player.id]?.[category] ?? 0;
                             const next = Math.max(0, current - 5);
 
@@ -439,19 +477,23 @@ export default function GamePage() {
                               },
                             }));
                           }}
-                          disabled={(scoreSheet[player.id]?.[category] ?? 0) <= 0}
+                          disabled={isLockedDuplicate || currentValue <= 0}
                           className="soft-button px-3 py-1 text-sm disabled:opacity-40"
                         >
                           −
                         </button>
 
                         <span className="w-10 text-center text-base font-bold">
-                          {scoreSheet[player.id]?.[category] ?? 0}
+                          {currentValue}
                         </span>
 
                         <button
                           type="button"
                           onClick={() => {
+                            if (isLockedDuplicate) {
+                              return;
+                            }
+
                             const current = scoreSheet[player.id]?.[category] ?? 0;
                             const next = Math.min(10, current + 5);
 
@@ -463,12 +505,15 @@ export default function GamePage() {
                               },
                             }));
                           }}
-                          disabled={(scoreSheet[player.id]?.[category] ?? 0) >= 10}
+                          disabled={isLockedDuplicate || currentValue >= 10}
                           className="soft-button px-3 py-1 text-sm disabled:opacity-40"
                         >
                           +
                         </button>
                       </div>
+                          </>
+                        );
+                      })()}
                     </div>
                   ))}
                 </div>
