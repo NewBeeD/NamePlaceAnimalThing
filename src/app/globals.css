@@ -1,0 +1,66 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #0a0a0a;
+  --foreground: #ededed;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+}
+
+@layer utilities {
+  .glass-panel {
+    @apply rounded-2xl border border-white/20 bg-white/10 backdrop-blur-md shadow-xl;
+  }
+
+  .fun-button {
+    @apply rounded-xl bg-gradient-to-r from-fuchsia-500 to-cyan-500 px-5 py-3 font-semibold text-white shadow-lg transition hover:scale-[1.02] active:scale-95;
+  }
+
+  .soft-button {
+    @apply rounded-xl border border-white/25 bg-white/10 px-5 py-3 font-semibold text-white transition hover:bg-white/20;
+  }
+
+  .dance-bob {
+    animation: dance-bob 0.9s ease-in-out infinite alternate;
+    transform-origin: center bottom;
+  }
+
+  .dance-sway {
+    animation: dance-sway 1.2s ease-in-out infinite;
+    transform-origin: center bottom;
+  }
+}
+
+@keyframes dance-bob {
+  0% {
+    transform: translateY(0px) scale(1);
+  }
+  100% {
+    transform: translateY(-8px) scale(1.03);
+  }
+}
+
+@keyframes dance-sway {
+  0% {
+    transform: rotate(-4deg);
+  }
+  50% {
+    transform: rotate(4deg);
+  }
+  100% {
+    transform: rotate(-4deg);
+  }
+}
