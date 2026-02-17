@@ -209,6 +209,24 @@ const normalizeManualScore = (value) => {
   return numeric >= 5 ? 5 : 0;
 };
 
+const getAlphabeticLength = (value) => {
+  const cleaned = String(value || "").trim();
+  if (!cleaned) {
+    return 0;
+  }
+
+  return (cleaned.match(/[A-Za-z]/g) || []).length;
+};
+
+const shouldAutoZeroEntry = (value) => {
+  const cleaned = String(value || "").trim();
+  if (!cleaned) {
+    return true;
+  }
+
+  return getAlphabeticLength(cleaned) < 2;
+};
+
 const buildManualDuplicateLocks = (room) => {
   const countsByCategory = {};
   for (const category of room.settings.categories) {
@@ -218,7 +236,7 @@ const buildManualDuplicateLocks = (room) => {
   for (const user of room.users) {
     for (const category of room.settings.categories) {
       const answer = normalizeEntry(room.currentAnswers[user.id]?.[category] || "");
-      if (!answer) {
+      if (!answer || shouldAutoZeroEntry(answer)) {
         continue;
       }
 
@@ -231,7 +249,9 @@ const buildManualDuplicateLocks = (room) => {
     locks[user.id] = {};
     for (const category of room.settings.categories) {
       const answer = normalizeEntry(room.currentAnswers[user.id]?.[category] || "");
-      locks[user.id][category] = Boolean(answer) && (countsByCategory[category][answer] || 0) > 1;
+      locks[user.id][category] = Boolean(answer)
+        && !shouldAutoZeroEntry(answer)
+        && (countsByCategory[category][answer] || 0) > 1;
     }
   }
 
@@ -249,6 +269,10 @@ const isLikelyValidWord = (value, requiredLetter) => {
   }
 
   if (cleaned[0].toUpperCase() !== requiredLetter.toUpperCase()) {
+    return false;
+  }
+
+  if (shouldAutoZeroEntry(cleaned)) {
     return false;
   }
 
@@ -990,8 +1014,12 @@ app.prepare().then(() => {
       for (const targetId of assignedTargets) {
         sanitizedScores[targetId] = {};
         for (const category of room.settings.categories) {
+          const targetAnswer = String(room.currentAnswers[targetId]?.[category] || "").trim();
+          const isAutoZero = shouldAutoZeroEntry(targetAnswer);
           const isLockedDuplicate = Boolean(room.manualScoreLocks?.[targetId]?.[category]);
-          sanitizedScores[targetId][category] = isLockedDuplicate
+          sanitizedScores[targetId][category] = isAutoZero
+            ? 0
+            : isLockedDuplicate
             ? 5
             : normalizeManualScore(submittedScores?.[targetId]?.[category]);
         }
@@ -1022,6 +1050,8 @@ app.prepare().then(() => {
         let total = 0;
 
         for (const category of room.settings.categories) {
+          const targetAnswer = String(room.currentAnswers[target.id]?.[category] || "").trim();
+          const isAutoZero = shouldAutoZeroEntry(targetAnswer);
           const values = requiredScorers
             .filter((graderId) => (room.scoringAssignments?.[graderId] || []).includes(target.id))
             .map((graderId) => Number(room.scoreSheets[graderId]?.[target.id]?.[category] ?? 0))
@@ -1032,12 +1062,12 @@ app.prepare().then(() => {
             : 0;
 
           const isLockedDuplicate = Boolean(room.manualScoreLocks?.[target.id]?.[category]);
-          const normalized = isLockedDuplicate ? 5 : normalizeManualScore(average);
+          const normalized = isAutoZero ? 0 : (isLockedDuplicate ? 5 : normalizeManualScore(average));
 
           manualBreakdown[target.id][category] = {
-            answer: String(room.currentAnswers[target.id]?.[category] || "").trim(),
+            answer: targetAnswer,
             points: normalized,
-            reason: isLockedDuplicate ? "duplicate" : "manual",
+            reason: isAutoZero ? "invalid" : (isLockedDuplicate ? "duplicate" : "manual"),
           };
           total += normalized;
         }

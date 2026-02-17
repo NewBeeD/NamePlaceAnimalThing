@@ -27,6 +27,10 @@ const reasonStyles: Record<string, string> = {
   manual: "bg-violet-500/20 text-violet-200 border-violet-400/40",
 };
 
+const getAlphabeticLength = (value: string) => (value.match(/[A-Za-z]/g) || []).length;
+
+const isTooShortAnswer = (value: string) => getAlphabeticLength(String(value || "").trim()) < 2;
+
 export default function GamePage() {
   const router = useRouter();
   const params = useParams<{ code: string }>();
@@ -224,6 +228,12 @@ export default function GamePage() {
       return;
     }
 
+    const hasSingleLetterEntry = game.settings.categories.some((category) => isTooShortAnswer(String(answers[category] || "")));
+    if (hasSingleLetterEntry) {
+      setStatus("Each answer must be at least 2 letters.");
+      return;
+    }
+
     const socket = await getSocket();
     socket.emit("submit-response", {
       code: game.code,
@@ -276,6 +286,8 @@ export default function GamePage() {
   const timeLeftSeconds = Math.ceil(timeLeftMs / 1000);
   const minutesPart = String(Math.floor(timeLeftSeconds / 60)).padStart(2, "0");
   const secondsPart = String(timeLeftSeconds % 60).padStart(2, "0");
+  const hasMissingAnswers = Boolean(game?.settings.categories.some((category) => !String(answers[category] || "").trim()));
+  const hasShortAnswers = Boolean(game?.settings.categories.some((category) => isTooShortAnswer(String(answers[category] || ""))));
 
   const copyCode = async () => {
     await navigator.clipboard.writeText(roomCode);
@@ -412,7 +424,7 @@ export default function GamePage() {
             onClick={submitResponse}
             className="fun-button w-full sm:w-auto"
             disabled={
-              mySubmitted || !game.settings.categories.every((category) => Boolean(String(answers[category] || "").trim()))
+              mySubmitted || hasMissingAnswers || hasShortAnswers
             }
           >
             {mySubmitted ? "Submitted" : "Submit Response"}
